@@ -1,0 +1,235 @@
+openapi: "3.0.3"
+info:
+  title: Subscriptions API
+  version: "1.0.0"
+  description: REST-сервис для агрегации данных об онлайн подписках пользователей
+
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /subscriptions:
+    post:
+      summary: Создать подписку
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubscriptionRequest'
+            example:
+              service_name: "Yandex Plus"
+              price: 299
+              user_id: "60601fee-2bf1-4721-ae6f-7636e79a0cba"
+              start_date: "07-2025"
+      responses:
+        "201":
+          description: Подписка создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      summary: Список подписок
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+            format: uuid
+          description: Фильтр по ID пользователя
+      responses:
+        "200":
+          description: Список подписок
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Subscription'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /subscriptions/total:
+    get:
+      summary: Суммарная стоимость подписок за период
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+            format: uuid
+          description: Фильтр по ID пользователя
+        - in: query
+          name: service_name
+          schema:
+            type: string
+          description: Фильтр по названию сервиса
+        - in: query
+          name: from
+          schema:
+            type: string
+            example: "01-2025"
+          description: Начало периода (MM-YYYY)
+        - in: query
+          name: to
+          schema:
+            type: string
+            example: "12-2025"
+          description: Конец периода (MM-YYYY)
+      responses:
+        "200":
+          description: Суммарная стоимость
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotalCostResponse'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /subscriptions/{id}:
+    get:
+      summary: Получить подписку по ID
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionID'
+      responses:
+        "200":
+          description: Подписка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      summary: Обновить подписку
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSubscriptionRequest'
+      responses:
+        "204":
+          description: Обновлено
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      summary: Удалить подписку
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionID'
+      responses:
+        "204":
+          description: Удалено
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    SubscriptionID:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: integer
+
+  schemas:
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: integer
+        service_name:
+          type: string
+        price:
+          type: integer
+        user_id:
+          type: string
+          format: uuid
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+          nullable: true
+
+    CreateSubscriptionRequest:
+      type: object
+      required: [service_name, price, user_id, start_date]
+      properties:
+        service_name:
+          type: string
+        price:
+          type: integer
+          minimum: 1
+        user_id:
+          type: string
+          format: uuid
+        start_date:
+          type: string
+          example: "07-2025"
+        end_date:
+          type: string
+          example: "12-2025"
+          nullable: true
+
+    UpdateSubscriptionRequest:
+      type: object
+      properties:
+        service_name:
+          type: string
+        price:
+          type: integer
+          minimum: 1
+        end_date:
+          type: string
+          example: "12-2025"
+          nullable: true
+
+    TotalCostResponse:
+      type: object
+      properties:
+        total:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Неверный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
