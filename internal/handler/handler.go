@@ -1,26 +1,25 @@
 package handler
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
+
+	"subscriptions/internal/model"
+	"subscriptions/internal/service"
 
 	"github.com/go-chi/chi/v5"
-	"subscriptions/internal/model"
-	"subscriptions/internal/repository"
 )
 
 type Handler struct {
-	repo *repository.SubscriptionRepo
-	log  *slog.Logger
+	service *service.SubscriptionService
+	log     *slog.Logger
 }
 
-func New(repo *repository.SubscriptionRepo, log *slog.Logger) *Handler {
-	return &Handler{repo: repo, log: log}
+func New(svc *service.SubscriptionService, log *slog.Logger) *Handler {
+	return &Handler{service: svc, log: log}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -42,38 +41,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.ServiceName == "" || req.Price <= 0 || req.UserID == "" || req.StartDate == "" {
-		writeError(w, http.StatusBadRequest, "service_name, price, user_id, start_date are required; price must be > 0")
-		return
-	}
-	startDate, err := time.Parse(model.MonthLayout, req.StartDate)
+	resp, err := h.service.Create(r.Context(), &req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "start_date must be MM-YYYY")
-		return
-	}
-	sub := &model.Subscription{
-		ServiceName: req.ServiceName,
-		Price:       req.Price,
-		UserID:      req.UserID,
-		StartDate:   startDate,
-	}
-	if req.EndDate != nil {
-		t, err := time.Parse(model.MonthLayout, *req.EndDate)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "end_date must be MM-YYYY")
+		h.log.Error("create: service", "err", err)
+		if errors.Is(err, service.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		sub.EndDate = &t
-	}
-	id, err := h.repo.Create(r.Context(), sub)
-	if err != nil {
-		h.log.Error("create: repo", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	h.log.Info("subscription created", "id", id)
-	sub.ID = id
-	writeJSON(w, http.StatusCreated, model.ToResponse(sub))
+	h.log.Info("subscription created", "id", resp.ID)
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
@@ -82,30 +61,40 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	sub, err := h.repo.GetByID(r.Context(), id)
+	sub, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, service.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		h.log.Error("getbyid: repo", "err", err)
+		h.log.Error("getbyid: service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, model.ToResponse(sub))
+	writeJSON(w, http.StatusOK, sub)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	subs, err := h.repo.List(r.Context(), userID)
+	q := r.URL.Query()
+	userID := q.Get("user_id")
+	limit := 100
+	offset := 0
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			offset = n
+		}
+	}
+
+	resp, err := h.service.List(r.Context(), userID, limit, offset)
 	if err != nil {
-		h.log.Error("list: repo", "err", err)
+		h.log.Error("list: service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-	resp := make([]model.SubscriptionResponse, len(subs))
-	for i := range subs {
-		resp[i] = model.ToResponse(&subs[i])
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -121,9 +110,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if err := h.repo.Update(r.Context(), id, &req); err != nil {
-		h.log.Error("update: repo", "err", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := h.service.Update(r.Context(), id, &req); err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		h.log.Error("update: service", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	h.log.Info("subscription updated", "id", id)
@@ -136,8 +129,12 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		h.log.Error("delete: repo", "err", err)
+	if err := h.service.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		h.log.Error("delete: service", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -147,16 +144,14 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) TotalCost(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	total, err := h.repo.TotalCost(
-		r.Context(), // было context.Background() — исправлено
-		q.Get("user_id"),
-		q.Get("service_name"),
-		q.Get("from"),
-		q.Get("to"),
-	)
+	total, err := h.service.TotalCost(r.Context(), q.Get("user_id"), q.Get("service_name"), q.Get("from"), q.Get("to"))
 	if err != nil {
-		h.log.Error("totalcost: repo", "err", err)
-		writeError(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, service.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.log.Error("totalcost: service", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.TotalCostResponse{Total: total})

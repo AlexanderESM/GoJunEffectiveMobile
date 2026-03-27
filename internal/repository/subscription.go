@@ -2,11 +2,14 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"subscriptions/internal/model"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type SubscriptionRepo struct {
@@ -36,7 +39,7 @@ func (r *SubscriptionRepo) GetByID(ctx context.Context, id int) (*model.Subscrip
 	return &s, nil
 }
 
-func (r *SubscriptionRepo) List(ctx context.Context, userID string) ([]model.Subscription, error) {
+func (r *SubscriptionRepo) List(ctx context.Context, userID string, limit, offset int) ([]model.Subscription, error) {
 	var subs []model.Subscription
 	query := `SELECT * FROM subscriptions`
 	args := []interface{}{}
@@ -44,45 +47,85 @@ func (r *SubscriptionRepo) List(ctx context.Context, userID string) ([]model.Sub
 		query += ` WHERE user_id=$1`
 		args = append(args, userID)
 	}
+	query += ` ORDER BY id LIMIT $2 OFFSET $3`
+	args = append(args, limit, offset)
 	err := r.db.SelectContext(ctx, &subs, query, args...)
 	return subs, err
 }
 
 func (r *SubscriptionRepo) Update(ctx context.Context, id int, req *model.UpdateSubscriptionRequest) error {
-	set := ``
+	setClauses := []string{}
 	args := []interface{}{}
 	i := 1
 	if req.ServiceName != nil {
-		set += fmt.Sprintf("service_name=$%d,", i)
+		setClauses = append(setClauses, fmt.Sprintf("service_name=$%d", i))
 		args = append(args, *req.ServiceName)
 		i++
 	}
 	if req.Price != nil {
-		set += fmt.Sprintf("price=$%d,", i)
+		setClauses = append(setClauses, fmt.Sprintf("price=$%d", i))
 		args = append(args, *req.Price)
 		i++
 	}
 	if req.EndDate != nil {
-		t, err := time.Parse("01-2006", *req.EndDate)
+		t, err := time.Parse(model.MonthLayout, *req.EndDate)
 		if err != nil {
 			return fmt.Errorf("invalid end_date format: %w", err)
 		}
-		set += fmt.Sprintf("end_date=$%d,", i)
+		setClauses = append(setClauses, fmt.Sprintf("end_date=$%d", i))
 		args = append(args, t)
 		i++
 	}
-	if set == "" {
+	if len(setClauses) == 0 {
 		return nil
 	}
-	set = set[:len(set)-1]
 	args = append(args, id)
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf(`UPDATE subscriptions SET %s WHERE id=$%d`, set, i), args...)
-	return err
+	query := fmt.Sprintf("UPDATE subscriptions SET %s WHERE id=$%d", strings.Join(setClauses, ", "), i)
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *SubscriptionRepo) Delete(ctx context.Context, id int) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id=$1`, id)
-	return err
+	res, err := r.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *SubscriptionRepo) FindForTotalCost(ctx context.Context, userID, serviceName string, from, to time.Time) ([]model.Subscription, error) {
+	query := `SELECT * FROM subscriptions WHERE start_date <= $1 AND (end_date IS NULL OR end_date >= $2)`
+	args := []interface{}{to, from}
+	if userID != "" {
+		query += ` AND user_id=$3`
+		args = append(args, userID)
+	}
+	if serviceName != "" {
+		query += ` AND service_name=$4`
+		args = append(args, serviceName)
+	}
+	var subs []model.Subscription
+	if err := r.db.SelectContext(ctx, &subs, query, args...); err != nil {
+		return nil, err
+	}
+	return subs, nil
 }
 
 func (r *SubscriptionRepo) TotalCost(ctx context.Context, userID, serviceName, from, to string) (int, error) {
